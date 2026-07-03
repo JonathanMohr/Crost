@@ -1,0 +1,3 @@
+# Crost
+
+Imagine informative docs...
