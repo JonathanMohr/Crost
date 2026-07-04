@@ -86,6 +86,54 @@ int ByteBuffer_PushByte(ByteBuffer* buffer, uint8_t byte)
     return 0;
 }
 
+typedef struct BitWriter
+{
+    ByteBuffer* buffer;
+    uint8_t current;
+    uint8_t bitCount;
+} BitWriter;
+
+void BitWriter_Initialize(BitWriter* writer, ByteBuffer* buffer)
+{
+    writer->buffer = buffer;
+    writer->current = 0;
+    writer->bitCount = 0;
+}
+
+int BitWriter_WriteBit(BitWriter* writer, int bit)
+{
+    if (bit)
+        writer->current |= (1 << (7 - writer->bitCount));
+
+    writer->bitCount++;
+
+    if (writer->bitCount == 8)
+    {
+        if (ByteBuffer_PushByte(writer->buffer, writer->current) != 0)
+            return 1;
+
+        writer->current = 0;
+        writer->bitCount = 0;
+    }
+
+    return 0;
+}
+
+int BitWriter_Flush(BitWriter* writer)
+{
+    if (writer->bitCount > 0)
+    {
+        if (ByteBuffer_PushByte(writer->buffer, writer->current) != 0)
+            return 1;
+
+        writer->current = 0;
+        writer->bitCount = 0;
+    }
+
+    return 0;
+}
+
+
 typedef struct HuffmanNode
 {
     uint64_t frequency;
@@ -160,6 +208,13 @@ void set_bit(uint8_t* path, uint16_t index, int value)
         path[byteIndex] |= (1 << (7 - bitOffset));
     else
         path[byteIndex] &= ~(1 << (7 - bitOffset));
+}
+
+int getBit(const uint8_t* path, uint16_t index)
+{
+    uint16_t byteIndex = index / 8;
+    uint8_t bitOffset = index % 8;
+    return (path[byteIndex] >> (7 - bitOffset)) & 1;
 }
 
 void build_codes(HuffmanNode* node, HuffmanCode* codes, uint8_t* path, uint16_t depth)
@@ -251,48 +306,31 @@ uint8_t* compress(Allocator* allocator, const uint8_t* input, uint64_t inputLen,
         }
     }
 
-
     ByteBuffer buffer;
     ByteBuffer_Initialize(&buffer, allocator);
 
-    uint64_t pos = 0;
-    while (pos < inputLen)
+    BitWriter writer;
+    BitWriter_Initialize(&writer, &buffer);
+
+    for (uint64_t i = 0; i < inputLen; i++)
     {
-        const uint64_t startPos = pos;
-        const uint8_t firstByte = input[pos];
+        HuffmanCode* code = &codes[input[i]];
 
-        while (pos < inputLen && input[pos] == firstByte) pos++;
-
-        // For the count, only use the lower 7 bits, if the 8th bit is 0, it's not a count, it's a single byte
-
-        uint64_t count = pos - startPos;
-        if (count <= 1 && ((firstByte & 0x80) == 0))
+        for (uint8_t b = 0; b < code->length; b++)
         {
-            // Just push the byte
-            if (ByteBuffer_PushByte(&buffer, firstByte) != 0)
+            int bit = getBit(code->bits, b);
+            if (BitWriter_WriteBit(&writer, bit) != 0)
             {
                 ByteBuffer_Destroy(&buffer);
                 return NULL;
             }
         }
-        else
-        {
-            while (count > 0)
-            {
-                const uint8_t blockSize = (count > 127) ? 127 : (uint8_t)count;
-                if (ByteBuffer_PushByte(&buffer, blockSize | 0x80) != 0)
-                {
-                    ByteBuffer_Destroy(&buffer);
-                    return NULL;
-                }
-                if (ByteBuffer_PushByte(&buffer, firstByte) != 0)
-                {
-                    ByteBuffer_Destroy(&buffer);
-                    return NULL;
-                }
-                count -= blockSize;
-            }
-        }
+    }
+
+    if (BitWriter_Flush(&writer) != 0)
+    {
+        ByteBuffer_Destroy(&buffer);
+        return NULL;
     }
 
     // TODO: Not fully clean, but works for now
