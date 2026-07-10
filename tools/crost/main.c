@@ -1,5 +1,6 @@
-#include <string.h>
+#include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -248,7 +249,7 @@ uint8_t* compress(Allocator* allocator, const uint8_t* input, uint64_t inputLen,
 
     HuffmanCode codes[256];
 
-    if (frequencyCountAbove0 == 1)
+    if (frequencyCountAbove0 != 1)
     {
         uint64_t usedNodes = 0;
         HuffmanNode* nodes = allocator->allocate(allocator, ((2 * frequencyCountAbove0) - 1) * sizeof(HuffmanNode) + frequencyCountAbove0 * sizeof(HuffmanNode*)); // 2k-1 nodes + k nodes for the heap
@@ -350,15 +351,16 @@ uint8_t* decompress(Allocator* allocator, const uint8_t* input, uint64_t inputLe
 
 int main(int argc, const char* argv[])
 {
-    if (argc != 2)
+    if (argc != 3)
     {
-        fprintf(stderr, "Usage: %s <file>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <file> <output>\n", argv[0]);
         return 1;
     }
 
     Allocator allocator = getAllocator();
 
     const char* filename = argv[1];
+    const char* output = argv[2];
 
 #ifdef _WIN32
     FILE* file;
@@ -398,7 +400,7 @@ int main(int argc, const char* argv[])
     if (bytesRead != (size_t)fileSize)
     {
         fprintf(stderr, "Error: Could not read entire file %s\n", filename);
-        free(buffer);
+        allocator.free(&allocator, buffer);
         return 1;
     }
 
@@ -408,23 +410,33 @@ int main(int argc, const char* argv[])
     if (!compressed)
     {
         fputs("Error: Compressing failed\n", stderr);
-        free(buffer);
+        allocator.free(&allocator, buffer);
         return 1;
     }
 
-    free(buffer);
+    allocator.free(&allocator, buffer);
 
-    printf("Input length: %" PRIu64 "\nOutput length: %" PRIu64 "\n", (uint64_t)bytesRead, outputLen);
-
-    for (uint64_t i = 0; i < outputLen; i++)
+#ifdef _WIN32
+    FILE* outputFile;
+    fileResult = fopen_s(&outputFile, output, "w+b");
+    if (fileResult != 0)
+#else
+    FILE* outputFile = fopen(output, "w+b");
+    if (!outputFile)
+#endif
     {
-        if (compressed[i] < 16)
-            printf(" %" PRIx8 " ", compressed[i]);
-        else
-            printf("%" PRIx8 " ", compressed[i]);
+        fprintf(stderr, "Error: Could not open %s\n", filename);
+        return 1;
+    }
 
-        if (((i + 1) % 64) == 0)
-            puts("");
+    size_t bytesWritten = fwrite(compressed, 1, (size_t)outputLen, outputFile);
+    fclose(outputFile);
+
+    if (bytesWritten != outputLen)
+    {
+        fprintf(stderr, "Error: Could not write to %s\n", output);
+        allocator.free(&allocator, compressed);
+        return 1;
     }
 
     allocator.free(&allocator, compressed);
